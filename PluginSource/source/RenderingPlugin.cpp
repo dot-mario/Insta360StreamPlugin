@@ -1,4 +1,5 @@
 // Example low level rendering Unity plugin
+#include "RenderingPluginInterface.h"
 
 #include "PlatformBase.h"
 #include "RenderAPI.h"
@@ -7,6 +8,34 @@
 #include <math.h>
 #include <vector>
 
+
+#include <queue>
+#include <mutex>
+
+#include <iostream>
+
+static std::queue<BGRDataItem> g_BGRDataQueueFront;
+static std::queue<BGRDataItem> g_BGRDataQueueBack;
+static std::mutex g_BGRDataQueueMutexFront;
+static std::mutex g_BGRDataQueueMutexBack;
+
+void QueueBGRData(Npp8u* bgrData, int width, int height, int stride, int idx)
+{
+	BGRDataItem item = { bgrData, width, height, stride, idx};
+	if (idx == 0)
+	{
+		std::lock_guard<std::mutex> lock(g_BGRDataQueueMutexFront);
+		g_BGRDataQueueFront.push(item);
+	}
+	else if (idx == 1)
+	{
+		std::lock_guard<std::mutex> lock(g_BGRDataQueueMutexBack);
+		g_BGRDataQueueBack.push(item);
+	}
+	else {
+		std::cout << "[insta360][error] wrong idx: " << idx << "\n";
+	}
+}
 
 // --------------------------------------------------------------------------
 // SetTimeFromUnity, an example function we export which is called by one of the scripts.
@@ -20,18 +49,32 @@ extern "C" void UNITY_INTERFACE_EXPORT UNITY_INTERFACE_API SetTimeFromUnity (flo
 // --------------------------------------------------------------------------
 // SetTextureFromUnity, an example function we export which is called by one of the scripts.
 
-static void* g_TextureHandle = NULL;
+static void* g_TextureHandleFront = NULL;
 static int   g_TextureWidth  = 0;
 static int   g_TextureHeight = 0;
+// added by CHS
+static void* g_TextureHandleBack = NULL;
+static int   g_TextureWidth2 = 0;
+static int   g_TextureHeight2 = 0;
 
 extern "C" void UNITY_INTERFACE_EXPORT UNITY_INTERFACE_API SetTextureFromUnity(void* textureHandle, int w, int h)
 {
 	// A script calls this at initialization time; just remember the texture pointer here.
 	// Will update texture pixels each frame from the plugin rendering event (texture update
 	// needs to happen on the rendering thread).
-	g_TextureHandle = textureHandle;
+	g_TextureHandleFront = textureHandle;
 	g_TextureWidth = w;
 	g_TextureHeight = h;
+}
+
+extern "C" void UNITY_INTERFACE_EXPORT UNITY_INTERFACE_API SetTexture2FromUnity(void* textureHandle, int w, int h)
+{
+	// A script calls this at initialization time; just remember the texture pointer here.
+	// Will update texture pixels each frame from the plugin rendering event (texture update
+	// needs to happen on the rendering thread).
+	g_TextureHandleBack = textureHandle;
+	g_TextureWidth2 = w;
+	g_TextureHeight2 = h;
 }
 
 
@@ -90,12 +133,15 @@ static void UNITY_INTERFACE_API OnGraphicsDeviceEvent(UnityGfxDeviceEventType ev
 static IUnityInterfaces* s_UnityInterfaces = NULL;
 static IUnityGraphics* s_Graphics = NULL;
 
+//static IUnityInterfaces* s_UnityInterfaces2 = NULL;
+//static IUnityGraphics* s_Graphics2 = NULL;
+
 extern "C" void	UNITY_INTERFACE_EXPORT UNITY_INTERFACE_API UnityPluginLoad(IUnityInterfaces* unityInterfaces)
 {
 	s_UnityInterfaces = unityInterfaces;
 	s_Graphics = s_UnityInterfaces->Get<IUnityGraphics>();
 	s_Graphics->RegisterDeviceEventCallback(OnGraphicsDeviceEvent);
-	
+
 #if SUPPORT_VULKAN
 	if (s_Graphics->GetRenderer() == kUnityGfxRendererNull)
 	{
@@ -132,6 +178,9 @@ extern "C" void UNITY_INTERFACE_EXPORT UNITY_INTERFACE_API RegisterPlugin()
 static RenderAPI* s_CurrentAPI = NULL;
 static UnityGfxRenderer s_DeviceType = kUnityGfxRendererNull;
 
+//static RenderAPI* s_CurrentAPI2 = NULL; // To prevent from bottle neck when Updating Textures only with one RenderAPIz
+//static UnityGfxRenderer s_DeviceType2 = kUnityGfxRendererNull;
+
 
 static void UNITY_INTERFACE_API OnGraphicsDeviceEvent(UnityGfxDeviceEventType eventType)
 {
@@ -158,137 +207,140 @@ static void UNITY_INTERFACE_API OnGraphicsDeviceEvent(UnityGfxDeviceEventType ev
 	}
 }
 
-
-
-// --------------------------------------------------------------------------
-// OnRenderEvent
-// This will be called for GL.IssuePluginEvent script calls; eventID will
-// be the integer passed to IssuePluginEvent. In this example, we just ignore
-// that value.
-
-
-static void DrawColoredTriangle()
+void UpdateFrontTextureFromBGRDataCPU(Npp8u* bgrData, int width, int height, int stride)
 {
-	// Draw a colored triangle. Note that colors will come out differently
-	// in D3D and OpenGL, for example, since they expect color bytes
-	// in different ordering.
-	struct MyVertex
+	//std::cout << "[insta360][debug] UpdateFrontTextureFromBGRDataCPU 호출됨" << std::endl;
+	//	<< width << ", height: " << height << ", stride: " << stride << "\n";
+
+	size_t dataSize = width * height * 3;  // 3채널 BGR 데이터 크기
+	//std::cout << "[insta360][debug] 계산된 데이터 사이즈: " << dataSize << "\n";
+
+	unsigned char* hostBGR = (unsigned char*)malloc(dataSize);
+	if (!hostBGR)
 	{
-		float x, y, z;
-		unsigned int color;
-	};
-	MyVertex verts[3] =
-	{
-		{ -0.5f, -0.25f,  0, 0xFFff0000 },
-		{ 0.5f, -0.25f,  0, 0xFF00ff00 },
-		{ 0,     0.5f ,  0, 0xFF0000ff },
-	};
-
-	// Transformation matrix: rotate around Z axis based on time.
-	float phi = g_Time; // time set externally from Unity script
-	float cosPhi = cosf(phi);
-	float sinPhi = sinf(phi);
-	float depth = 0.7f;
-	float finalDepth = s_CurrentAPI->GetUsesReverseZ() ? 1.0f - depth : depth;
-	float worldMatrix[16] = {
-		cosPhi,-sinPhi,0,0,
-		sinPhi,cosPhi,0,0,
-		0,0,1,0,
-		0,0,finalDepth,1,
-	};
-
-	s_CurrentAPI->DrawSimpleTriangles(worldMatrix, 1, verts);
-}
-
-
-static void ModifyTexturePixels()
-{
-	void* textureHandle = g_TextureHandle;
-	int width = g_TextureWidth;
-	int height = g_TextureHeight;
-	if (!textureHandle)
+		std::cout << "[insta360][error] 호스트 버퍼 할당 실패" << "\n";
 		return;
+	}
 
-	int textureRowPitch;
+	void* textureHandle = g_TextureHandleFront;
+	//std::cout << "[insta360][debug] g_TextureHandleFront = " << textureHandle << "\n";
+	if (!textureHandle || !s_CurrentAPI)
+	{
+		std::cout << "[insta360][error] Texture handle 또는 RenderAPI가 유효하지 않음" << "\n";
+		free(hostBGR);
+		return;
+	}
+
+	int textureRowPitch = 0;
+	//std::cout << "[insta360][debug] BeginModifyTexture 호출 전" << "\n";
 	void* textureDataPtr = s_CurrentAPI->BeginModifyTexture(textureHandle, width, height, &textureRowPitch);
 	if (!textureDataPtr)
+	{
+		std::cout << "[insta360][error] BeginModifyTexture 실패" << "\n";
+		free(hostBGR);
 		return;
+	}
+	//std::cout << "[insta360][debug] BeginModifyTexture 성공 - Row Pitch: " << textureRowPitch << "\n";
 
-	const float t = g_Time * 4.0f;
+	cudaError_t cudaStatus = cudaMemcpy(hostBGR, bgrData, dataSize, cudaMemcpyDeviceToHost);;
+	if (cudaStatus != cudaSuccess)
+	{
+		std::cout << "[insta360][error] cudaMemcpyDeviceToHost 실패, error code: "
+			<< cudaStatus << "\n";
+		free(hostBGR);
+		return;
+	}
 
-	unsigned char* dst = (unsigned char*)textureDataPtr;
+	memset(textureDataPtr, 0, height * textureRowPitch);
+	//std::cout << "[insta360][debug] Texture 메모리 클리어 완료" << "\n";
+
+	// BGR -> RGBA 변환
+	unsigned char* dstPtr = (unsigned char*)textureDataPtr;
 	for (int y = 0; y < height; ++y)
 	{
-		unsigned char* ptr = dst;
+		unsigned char* dstRow = dstPtr + y * width * 4;
+		unsigned char* srcRow = hostBGR + (height - 1 - y) * width * 3;
 		for (int x = 0; x < width; ++x)
 		{
-			// Simple "plasma effect": several combined sine waves
-			int vv = int(
-				(127.0f + (127.0f * sinf(x / 7.0f + t))) +
-				(127.0f + (127.0f * sinf(y / 5.0f - t))) +
-				(127.0f + (127.0f * sinf((x + y) / 6.0f - t))) +
-				(127.0f + (127.0f * sinf(sqrtf(float(x*x + y*y)) / 4.0f - t)))
-				) / 4;
-
-			// Write the texture pixel
-			ptr[0] = vv;
-			ptr[1] = vv;
-			ptr[2] = vv;
-			ptr[3] = vv;
-
-			// To next pixel (our pixels are 4 bpp)
-			ptr += 4;
+			dstRow[x * 4 + 0] = srcRow[x * 3 + 0]; // Red
+			dstRow[x * 4 + 1] = srcRow[x * 3 + 1]; // Green
+			dstRow[x * 4 + 2] = srcRow[x * 3 + 2]; // Blue
+			dstRow[x * 4 + 3] = 255;               // Alpha
 		}
-
-		// To next image row
-		dst += textureRowPitch;
 	}
 
 	s_CurrentAPI->EndModifyTexture(textureHandle, width, height, textureRowPitch, textureDataPtr);
+	//std::cout << "[insta360][debug] EndModifyTexture 호출 완료" << "\n";
+
+	free(hostBGR);
 }
 
-
-static void ModifyVertexBuffer()
+void UpdateBackTextureFromBGRDataCPU(Npp8u* bgrData, int width, int height, int stride)
 {
-	void* bufferHandle = g_VertexBufferHandle;
-	int vertexCount = g_VertexBufferVertexCount;
-	if (!bufferHandle)
-		return;
+	//std::cout << "[insta360][debug] UpdateBackTextureFromBGRDataCPU 호출됨" << std::endl;
+	//	<< width << ", height: " << height << ", stride: " << stride << "\n";
 
-	size_t bufferSize;
-	void* bufferDataPtr = s_CurrentAPI->BeginModifyVertexBuffer(bufferHandle, &bufferSize);
-	if (!bufferDataPtr)
-		return;
-	int vertexStride = int(bufferSize / vertexCount);
+	size_t dataSize = width * height * 3;  // 3채널 BGR 데이터 크기
+	//std::cout << "[insta360][debug] 계산된 데이터 사이즈: " << dataSize << "\n";
 
-	// Unity should return us a buffer that is the size of `vertexCount * sizeof(MeshVertex)`
-	// If that's not the case then we should quit to avoid unexpected results.
-	// This can happen if https://docs.unity3d.com/ScriptReference/Mesh.GetNativeVertexBufferPtr.html returns
-	// a pointer to a buffer with an unexpected layout.
-	if (static_cast<unsigned int>(vertexStride) != sizeof(MeshVertex))
-		return;
-
-	const float t = g_Time * 3.0f;
-
-	char* bufferPtr = (char*)bufferDataPtr;
-	// modify vertex Y position with several scrolling sine waves,
-	// copy the rest of the source data unmodified
-	for (int i = 0; i < vertexCount; ++i)
+	unsigned char* hostBGR = (unsigned char*)malloc(dataSize);
+	if (!hostBGR)
 	{
-		const MeshVertex& src = g_VertexSource[i];
-		MeshVertex& dst = *(MeshVertex*)bufferPtr;
-		dst.pos[0] = src.pos[0];
-		dst.pos[1] = src.pos[1] + sinf(src.pos[0] * 1.1f + t) * 0.4f + sinf(src.pos[2] * 0.9f - t) * 0.3f;
-		dst.pos[2] = src.pos[2];
-		dst.normal[0] = src.normal[0];
-		dst.normal[1] = src.normal[1];
-		dst.normal[2] = src.normal[2];
-		dst.uv[0] = src.uv[0];
-		dst.uv[1] = src.uv[1];
-		bufferPtr += vertexStride;
+		std::cout << "[insta360][error] 호스트 버퍼 할당 실패" << "\n";
+		return;
 	}
 
-	s_CurrentAPI->EndModifyVertexBuffer(bufferHandle);
+	void* textureHandle = g_TextureHandleBack;
+	//std::cout << "[insta360][debug] g_TextureHandleFront = " << textureHandle << "\n";
+	if (!textureHandle || !s_CurrentAPI)
+	{
+		std::cout << "[insta360][error] Texture handle 또는 RenderAPI가 유효하지 않음" << "\n";
+		free(hostBGR);
+		return;
+	}
+
+	int textureRowPitch = 0;
+	//std::cout << "[insta360][debug] BeginModifyTexture2 호출 전" << "\n";
+	void* textureDataPtr = s_CurrentAPI->BeginModifyTexture2(textureHandle, width, height, &textureRowPitch);
+	if (!textureDataPtr)
+	{
+		std::cout << "[insta360][error] BeginModifyTexture 실패" << "\n";
+		free(hostBGR);
+		return;
+	}
+	//std::cout << "[insta360][debug] BeginModifyTexture2 성공 - Row Pitch: " << textureRowPitch << "\n";
+
+	cudaError_t cudaStatus = cudaMemcpy(hostBGR, bgrData, dataSize, cudaMemcpyDeviceToHost);;
+	if (cudaStatus != cudaSuccess)
+	{
+		std::cout << "[insta360][error] cudaMemcpyDeviceToHost 실패, error code: "
+			<< cudaStatus << "\n";
+		free(hostBGR);
+		return;
+	}
+
+	memset(textureDataPtr, 0, height * textureRowPitch);
+	//std::cout << "[insta360][debug] Texture 메모리 클리어 완료" << "\n";
+
+	// BGR -> RGBA 변환
+	unsigned char* dstPtr = (unsigned char*)textureDataPtr;
+	for (int y = 0; y < height; ++y)
+	{
+		unsigned char* dstRow = dstPtr + y * width * 4;
+		unsigned char* srcRow = hostBGR + (height - 1 - y) * width * 3;
+		for (int x = 0; x < width; ++x)
+		{
+			dstRow[x * 4 + 0] = srcRow[x * 3 + 0]; // Red
+			dstRow[x * 4 + 1] = srcRow[x * 3 + 1]; // Green
+			dstRow[x * 4 + 2] = srcRow[x * 3 + 2]; // Blue
+			dstRow[x * 4 + 3] = 255;               // Alpha
+		}
+	}
+
+	s_CurrentAPI->EndModifyTexture2(textureHandle, width, height, textureRowPitch, textureDataPtr);
+	//std::cout << "[insta360][debug] EndModifyTexture2 호출 완료" << "\n";
+
+	free(hostBGR);
 }
 
 static void drawToPluginTexture()
@@ -309,21 +361,79 @@ static void UNITY_INTERFACE_API OnRenderEvent(int eventID)
 
 	if (eventID == 1)
 	{
-        drawToRenderTexture();
-        DrawColoredTriangle();
-        ModifyTexturePixels();
-        ModifyVertexBuffer();
+        //drawToRenderTexture();
+        //DrawColoredTriangle();
+        //ModifyTexturePixels();
+        //ModifyVertexBuffer();
+
+		// front 스트림 처리
+		BGRDataItem frontImage;
+		bool frontAvailable = false;
+		{
+			std::lock_guard<std::mutex> lock(g_BGRDataQueueMutexFront);
+			if (!g_BGRDataQueueFront.empty())
+			{
+				frontImage = g_BGRDataQueueFront.front();
+				g_BGRDataQueueFront.pop();
+				frontAvailable = true;
+			}
+		}
+		// 락 해제 후, 오래 걸리는 업데이트 수행
+		if (frontAvailable)
+		{
+			UpdateFrontTextureFromBGRDataCPU(frontImage.data, frontImage.width, frontImage.height, frontImage.stride);
+			nppiFree(frontImage.data);
+		}
+
+		// back 스트림 처리
+		BGRDataItem backImage;
+		bool backAvailable = false;
+		{
+			std::lock_guard<std::mutex> lock(g_BGRDataQueueMutexBack);
+			if (!g_BGRDataQueueBack.empty())
+			{
+				backImage = g_BGRDataQueueBack.front();
+				g_BGRDataQueueBack.pop();
+				backAvailable = true;
+			}
+		}
+		if (backAvailable)
+		{
+			UpdateBackTextureFromBGRDataCPU(backImage.data, backImage.width, backImage.height, backImage.stride);
+			nppiFree(backImage.data);
+		}
 	}
 
 	if (eventID == 2)
 	{
-		drawToPluginTexture();
+		// d3d12만을 위한 코드로, 플러그인이 관리, 출력하는 텍스처를 위한 함수이므로 현재 우리에겐 필요없음
+		//drawToPluginTexture();
 	}
+
+	//if (eventID == 3)
+	//{
+	//	std::lock_guard<std::mutex> lock(g_BGRDataQueueMutexBack);
+	//	if (!g_BGRDataQueueBack.empty())
+	//	{
+	//		BGRDataItem backImage = g_BGRDataQueueBack.front();
+	//		g_BGRDataQueueBack.pop();
+	//		/*std::cout << "[insta360][debug] Processing back image: "
+	//			<< backImage.width << "x" << backImage.height
+	//			<< ", stride: " << backImage.stride << "\n";*/
+	//		UpdateBackTextureFromBGRDataCPU(backImage.data, backImage.width, backImage.height, backImage.stride);
+	//		nppiFree(backImage.data);
+	//	}
+	//}
+
+	//if (eventID == 4)
+	//{
+	//	drawToPluginTexture2();
+	//}
 
 }
 
 // --------------------------------------------------------------------------
-// GetRenderEventFunc, an example function we export which is used to get a rendering event callback function.
+// `RenderEventFunc, an example function we export which is used to get a rendering event callback function.
 
 extern "C" UnityRenderingEvent UNITY_INTERFACE_EXPORT UNITY_INTERFACE_API GetRenderEventFunc()
 {

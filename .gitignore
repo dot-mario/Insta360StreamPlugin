@@ -20,3 +20,5 @@ PluginSource/build
 PluginSource/projects/Android/libs/*
 PluginSource/projects/Android/obj/*
 PluginSource/source/*.o
+PluginSource/ffmpeg-7.1-full_build-shared
+PluginSource/WindowsSDK20241126

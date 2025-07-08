@@ -1,54 +1,62 @@
-# Native code (C++) rendering plugin example for Unity
+# Insta360StreamPlugin
 
-This sample demonstrates how to render and do other graphics related things from a C++ plugin, via a
-[native plugin interface](http://docs.unity3d.com/Manual/NativePluginInterface.html).
+This is a C++ native plugin that uses the live stream feature of Insta360 cameras to display 360 video in Unity in real-time. It's fast and stable, using hardware acceleration (CUDA, NPP). (Based on DX12)
 
-Unity versions:
+Tested with Insta360 X3.
 
-* **2023.1+** use tip of default branch.
+## How it Works
 
-The plugin itself does very few things:
+1.  **Camera Thread (Native)**: Receives the H.264 stream from the Insta360 camera, decodes it on the GPU, and converts the color space (NV12 → BGR).
+2.  **Data Queue**: Temporarily stores the processed video frames.
+3.  **Unity Render Thread**: Pulls frames from the queue and prepares them for the Unity texture (BGR → RGBA).
+4.  **Texture Update (C#)**: Uploads the image data from CPU to GPU memory using `LoadRawTextureData` to directly update the Unity texture.
 
-* **Demonstrates basic plumbing**. How to initialize the graphics API, and how calls from Unity into plugin are made.
-* **Draws a triangle**. A single colored rotating triangle in the middle of the screen. For each backend API, this shows bare basics of how to setup vertex data, setup
-  some shaders or render states, and do a draw call.
-* **Changes Unity texture data**. Unity side passes a texture into the plugin, and the code changes the pixels of it each frame, with an animated "plasma" pattern. This
-  demonstrates how to work with [Texture.GetNativeTexturePtr](https://docs.unity3d.com/ScriptReference/Texture.GetNativeTexturePtr.html).
-* **Changes Unity mesh vertex data**. Unity side passes a vertex buffer into the plugin, and the code changes the vertices each frame, with an animated "heightfield" pattern. This
-  demonstrates how to work with [Mesh.GetNativeVertexBufferPtr](https://docs.unity3d.com/ScriptReference/Mesh.GetNativeVertexBufferPtr.html).
+## Prerequisites
 
+⚠️ **Important**: You must download and install the following libraries yourself, then configure the paths in the Visual Studio project.
 
-Native code rendering is implemented for several platforms and graphics APIs:
+* Insta360 C++ Camera SDK
+* FFmpeg (built with CUDA and NPP support)
+* NVIDIA CUDA Toolkit
 
-* Windows (D3D11, D3D12, OpenGL, Vulkan)
-	* Note that Vulkan and DX12 are not compiled in by default
-	* Vulkan requires Vulkan SDK; enable it by editing `#define SUPPORT_VULKAN 0`
-	to `1` under `UNITY_WIN` clause in `PlatformBase.h`
-	* DX12 requires additional header files (see on [github](https://github.com/microsoft/DirectX-Headers) or [nuget package](https://www.nuget.org/packages/Microsoft.Direct3D.D3D12/1.4.10)); enable it by editing `#define SUPPORT_D3D12 0` to `1` under `UNITY_WIN` clause in `PlatformBase.h`
-* macOS (Metal, OpenGL)
-* Linux (OpenGL, Vulkan)
-* Windows Store aka UWP (D3D11, D3D12)
-* WebGL (OpenGL ES)
-* Android (OpenGL ES, Vulkan)
-* iOS/tvOS (Metal; Simulator is supported if you use unity 2020+ and XCode 11+)
-* EmbeddedLinux (OpenGL, OpenGL ES , Vulkan)
-* QNX (OpenGL ES)
-* ...more platforms might be coming soon, we just did not get around to adding project files yet.
+## Build
 
-Code is organized as follows:
+1.  Clone this repository.
+2.  Install all the prerequisites listed above.
+3.  Open the `.sln` file in Visual Studio and configure the following paths in the project properties:
+    * **Include Directories**: `C/C++ -> General -> Additional Include Directories`
+    * **Library Directories**: `Linker -> General -> Additional Library Directories`
+4.  Build the project to create the `RenderingPlugin.dll` file.
 
-* `PluginSource` is source code & IDE project files for the C++ plugin.
- 	* `source`: The source code itself. `RenderingPlugin.cpp` is the main logic, `RenderAPI*.*` files contain rendering implementations for different APIs.
-	* `projects/VisualStudio2022`: Visual Studio 2022 project files for regular Windows plugin
-	* `projects/UWPVisualStudio2022`: Visual Studio 2022 project files for Windows Store (UWP) plugin
-	* `projects/Xcode`: Apple Xcode project file for Mac OS X plugin, Xcode 10.3 on macOS 10.14 was tested
-	* `projects/GNUMake`: Makefile for Linux
-	* `projects/EmbeddedLinux`: Windows .bat files to build plugins for different architectures
-	* `projects/QNX`: Makefile for Linux requires QNX to be installed and environment variables to be set
-* `UnityProject` is the Unity (2023.1.15f1 was tested) project.
-	* Single `scene` that contains the plugin sample scene.
+## Usage in Unity
 
+1.  Copy the built `RenderingPlugin.dll` file into your Unity project's `Assets/Plugins/x86_64` folder.
+```markdown
+Plugins/
+├── RenderingPlugin.dll
+├── CameraSDK.dll
+├── avcodec-61.dll
+├── avdevice-61.dll
+├── avfilter-10.dll
+├── avformat-61.dll
+├── avutil-59.dll
+├── postproc-58.dll
+├── swresample-5.dll
+└── swscale-8.dll
+```
+2.  Create an empty GameObject in the Scene and add the provided `insta360.cs` script to it.
+3.  In the Inspector window, link the following components:
+    * **Sphere**: The Sphere model object the video will be mapped onto.
+    * **Skybox Material**: The Skybox material that will use the dual fisheye video textures.
 
-### What license are the graphics samples shipped under?
+## Future Work
 
-Just like with most other samples, the license is MIT/X11.
+The current process copies the decoded frame data from GPU memory to the CPU, only to upload it back to the GPU for the texture update. This GPU → CPU → GPU roundtrip is inefficient.
+
+The primary goal for future development is to implement cuda-d3d12 interoperability. This will allow the decoded GPU resource from CUDA to be shared directly with the Direct3D 12 rendering context. This will eliminate the unnecessary memory copy, significantly improving performance and reducing latency.
+
+## License
+
+* The primary license for this project is **MIT**.
+* However, since it's based on an official Unity example, it can **only be used with Unity** (per the Unity Companion License).
+* You must also comply with the licenses for the **Insta360 SDK** and **FFmpeg**.
