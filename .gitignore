@@ -15,8 +15,13 @@ UnityProject/Library
 UnityProject/Temp
 UnityProject/UWP
 UnityProject/Logs
+UnityProject/obj
+UnityProject/UserSettings
 
 PluginSource/build
 PluginSource/projects/Android/libs/*
 PluginSource/projects/Android/obj/*
 PluginSource/source/*.o
+PluginSource/ffmpeg-7.1-full_build-shared
+PluginSource/WindowsSDK20241126
+PluginSource/projects/VisualStudio2022/packages

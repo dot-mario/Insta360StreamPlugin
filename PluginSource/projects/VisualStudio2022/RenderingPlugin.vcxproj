@@ -1,5 +1,6 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="packages\Microsoft.Direct3D.D3D12.1.615.1\build\native\Microsoft.Direct3D.D3D12.props" Condition="Exists('packages\Microsoft.Direct3D.D3D12.1.615.1\build\native\Microsoft.Direct3D.D3D12.props')" />
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
       <Configuration>Debug</Configuration>
@@ -23,6 +24,7 @@
     <ClInclude Include="..\..\source\gl3w\glcorearb.h" />
     <ClInclude Include="..\..\source\PlatformBase.h" />
     <ClInclude Include="..\..\source\RenderAPI.h" />
+    <ClInclude Include="..\..\source\RenderingPluginInterface.h" />
     <ClInclude Include="..\..\source\Unity\IUnityGraphics.h" />
     <ClInclude Include="..\..\source\Unity\IUnityGraphicsD3D11.h" />
     <ClInclude Include="..\..\source\Unity\IUnityGraphicsD3D12.h" />
@@ -32,6 +34,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\..\source\gl3w\gl3w.c" />
+    <ClCompile Include="..\..\source\Insta360.cpp" />
     <ClCompile Include="..\..\source\RenderAPI.cpp" />
     <ClCompile Include="..\..\source\RenderAPI_D3D11.cpp" />
     <ClCompile Include="..\..\source\RenderAPI_D3D12.cpp" />
@@ -82,8 +85,7 @@
     <PlatformToolset>v143</PlatformToolset>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
-  <ImportGroup Label="ExtensionSettings">
-  </ImportGroup>
+  <ImportGroup Label="ExtensionSettings" />
   <ImportGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
@@ -159,12 +161,14 @@ ENDLOCAL
       <LanguageStandard>stdcpp17</LanguageStandard>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <OmitFramePointers>true</OmitFramePointers>
+      <AdditionalIncludeDirectories>C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.8\include;C:\Users\kbh19\Documents\GIthub\NativeRenderingPlugin\PluginSource\ffmpeg-7.1-full_build-shared\include;C:\Users\kbh19\Documents\GIthub\NativeRenderingPlugin\PluginSource\WindowsSDK20241126\CameraSDK-20241115_144142-1.1.0-win64\include;C:\Users\User\Desktop\Insta360\NativeRenderingPlugin\PluginSource\ffmpeg-7.1-full_build-shared\include;C:\Users\User\Desktop\Insta360\NativeRenderingPlugin\PluginSource\WindowsSDK20241126\CameraSDK-20241115_144142-1.1.0-win64\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>opengl32.lib;d3d12.lib</AdditionalDependencies>
+      <AdditionalDependencies>opengl32.lib;d3d12.lib;avcodec.lib;avformat.lib;avutil.lib;CameraSDK.lib</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <SubSystem>Windows</SubSystem>
       <ModuleDefinitionFile>../../source/RenderingPlugin.def</ModuleDefinitionFile>
+      <AdditionalLibraryDirectories>C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.8\lib;C:\Users\User\Desktop\Insta360\NativeRenderingPlugin\PluginSource\WindowsSDK20241126\CameraSDK-20241115_144142-1.1.0-win64\lib;C:\Users\User\Desktop\Insta360\NativeRenderingPlugin\PluginSource\ffmpeg-7.1-full_build-shared\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
       <Command>SETLOCAL
@@ -220,32 +224,29 @@ ENDLOCAL
       <LanguageStandard>stdcpp17</LanguageStandard>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <OmitFramePointers>true</OmitFramePointers>
+      <AdditionalIncludeDirectories>C:\Program Files\NVIDIA Corporation\NvToolsExt\include;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.8\include;..\..\ffmpeg-7.1-full_build-shared\include;..\..\WindowsSDK20241126\CameraSDK-20241115_144142-1.1.0-win64\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>opengl32.lib;d3d12.lib</AdditionalDependencies>
+      <AdditionalDependencies>CameraSDK.lib;opengl32.lib;d3d12.lib;avutil.lib;avcodec.lib;nppicc.lib;nppisu.lib;nppig.lib;cudart.lib</AdditionalDependencies>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <SubSystem>Windows</SubSystem>
+      <SubSystem>Console</SubSystem>
       <ModuleDefinitionFile>../../source/RenderingPlugin.def</ModuleDefinitionFile>
+      <AdditionalLibraryDirectories>C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.8\lib\x64;..\..\ffmpeg-7.1-full_build-shared\lib;..\..\WindowsSDK20241126\CameraSDK-20241115_144142-1.1.0-win64\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
-      <Command>SETLOCAL
-
-if "$(PlatformShortName)" == "x86" (
-  set TARGET_PLUGIN_PATH=$(SolutionDir)..\..\..\UnityProject\Assets\Plugins\x86
-) else (
-  set TARGET_PLUGIN_PATH=$(SolutionDir)..\..\..\UnityProject\Assets\Plugins\x86_64
-)
-echo Target Plugin Path is %TARGET_PLUGIN_PATH%
-copy /Y "$(TargetPath)" "%TARGET_PLUGIN_PATH%\$(TargetFileName)"
-
-ENDLOCAL
-</Command>
+      <Command>
+      </Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+    <Import Project="packages\Microsoft.Direct3D.D3D12.1.615.1\build\native\Microsoft.Direct3D.D3D12.targets" Condition="Exists('packages\Microsoft.Direct3D.D3D12.1.615.1\build\native\Microsoft.Direct3D.D3D12.targets')" />
+  </ImportGroup>
   <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
     <PropertyGroup>
       <ErrorText>This project references NuGet package(s) that are missing on this computer. Use NuGet Package Restore to download them.  For more information, see http://go.microsoft.com/fwlink/?LinkID=322105. The missing file is {0}.</ErrorText>
     </PropertyGroup>
+    <Error Condition="!Exists('packages\Microsoft.Direct3D.D3D12.1.615.1\build\native\Microsoft.Direct3D.D3D12.props')" Text="$([System.String]::Format('$(ErrorText)', 'packages\Microsoft.Direct3D.D3D12.1.615.1\build\native\Microsoft.Direct3D.D3D12.props'))" />
+    <Error Condition="!Exists('packages\Microsoft.Direct3D.D3D12.1.615.1\build\native\Microsoft.Direct3D.D3D12.targets')" Text="$([System.String]::Format('$(ErrorText)', 'packages\Microsoft.Direct3D.D3D12.1.615.1\build\native\Microsoft.Direct3D.D3D12.targets'))" />
   </Target>
 </Project>

@@ -121,7 +121,7 @@ static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL Hook_vkGetInstanceProcAddr(VkIns
     INTERCEPT(vkCreateInstance);
 #undef INTERCEPT
 
-    return vkGetInstanceProcAddr(device, funcName);
+    return NULL;
 }
 
 static PFN_vkGetInstanceProcAddr UNITY_INTERFACE_API InterceptVulkanInitialization(PFN_vkGetInstanceProcAddr getInstanceProcAddr, void*)

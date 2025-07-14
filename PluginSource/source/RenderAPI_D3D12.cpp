@@ -24,6 +24,7 @@
 #define D3D12_DEFAULT_HEAP_TRIANGLE_BUFFER_NAME L"Native Plugin Default Heap Triangle Vertex Buffer"
 #define D3D12_UPLOAD_HEAP_TRIANGLE_BUFFER_NAME L"Native Plugin Upload Heap Triangle Vertex Buffer"
 #define D3D12_UPLOAD_HEAP_TEXTURE_BUFFER_NAME L"Native Plugin Upload Heap Texture"
+#define D3D12_UPLOAD_HEAP_TEXTURE2_BUFFER_NAME L"Native Plugin Upload Heap Texture2"
 #define D3D12_UPLOAD_HEAP_VERTEX_BUFFER_NAME L"Native Plugin Upload Heap Vertex Buffer"
 
 // Compiled from:
@@ -328,6 +329,9 @@ public:
     virtual void drawToRenderTexture() override;
     //-----------------------------------------------------------
 
+    virtual void* BeginModifyTexture2(void* textureHandle, int textureWidth, int textureHeight, int* outRowPitch) override;
+    virtual void EndModifyTexture2(void* textureHandle, int textureWidth, int textureHeight, int rowPitch, void* dataPtr) override;
+
     //-----------------------------------------------------------
     // These functions will be called from unity submission thread,
     // see kUnityD3D12GraphicsQueueAccess_Allow
@@ -408,6 +412,7 @@ private:
     IUnityGraphicsD3D12v7*         s_d3d12;
 
     ID3D12Resource*                s_upload_texture;
+    ID3D12Resource*                s_upload_texture2;
     ID3D12Resource*                s_upload_buffer;
     ID3D12PipelineState*           m_triangle_pso;
     D3D12_INPUT_ELEMENT_DESC       m_triangle_layout[2];
@@ -444,9 +449,12 @@ private:
 
     ID3D12CommandAllocator*        m_texture_copy_cmd_allocator;
     ID3D12GraphicsCommandList*     m_texture_copy_cmd_list;
+    ID3D12CommandAllocator*        m_texture2_copy_cmd_allocator;
+    ID3D12GraphicsCommandList*     m_texture2_copy_cmd_list;
 
     UINT64                         m_vertex_copy_fence = 0;
     UINT64                         m_texture_copy_fence = 0;
+    UINT64                         m_texture2_copy_fence = 0;
     UINT64                         m_render_texture_draw_fence = 0;
 
     HANDLE                         m_fence_event;
@@ -464,6 +472,7 @@ const UINT kNodeMask = 0;
 RenderAPI_D3D12::RenderAPI_D3D12()
     : s_d3d12(NULL)
     , s_upload_texture(NULL)
+    , s_upload_texture2(NULL)
     , s_upload_buffer(NULL)
     , m_triangle_pso(NULL)
     , m_triangle_rootsig(NULL)
@@ -1059,11 +1068,17 @@ void RenderAPI_D3D12::initialize_and_create_resources()
     handle_hr(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&m_texture_copy_cmd_allocator)),
               "Failed to create cmd allocator for texture copy\n");
 
+    handle_hr(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&m_texture2_copy_cmd_allocator)),
+        "Failed to create cmd allocator for texture copy\n");
+
     handle_hr(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&m_vertex_copy_cmd_allocator)),
               "Failed to create cmd allocator for vertex copy\n");
 
     handle_hr(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_texture_copy_cmd_allocator, nullptr, IID_PPV_ARGS(&m_texture_copy_cmd_list)),
              "Failed to create texture copy cmd list\n");
+
+    handle_hr(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_texture2_copy_cmd_allocator, nullptr, IID_PPV_ARGS(&m_texture2_copy_cmd_list)),
+        "Failed to create texture copy cmd list\n");
 
     handle_hr(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_vertex_copy_cmd_allocator, nullptr, IID_PPV_ARGS(&m_vertex_copy_cmd_list)),
               "Failed to create vertex copy cmd list\n");
@@ -1072,15 +1087,18 @@ void RenderAPI_D3D12::initialize_and_create_resources()
              "Failed to create fence for plugin texture");
 
     m_texture_copy_cmd_allocator->SetName(L"texture copy cmd allocator");
+    m_texture2_copy_cmd_allocator->SetName(L"texture2 copy cmd allocator");
     m_vertex_copy_cmd_allocator->SetName(L"vertex copy cmd allocator");
     m_render_texture_cmd_allocator->SetName(L"render texture cmd allocator");
 
     m_vertex_copy_cmd_list->SetName(L"vertex copy cmd list");
     m_texture_copy_cmd_list->SetName(L"texture copy cmd list");
+    m_texture2_copy_cmd_list->SetName(L"texture2 copy cmd list");
     m_render_texture_cmd_list->SetName(L"render texture cmd list");
 
     handle_hr(m_vertex_copy_cmd_list->Close(), "Failed to close cmd list for vertex copy\n");
     handle_hr(m_texture_copy_cmd_list->Close(), "Failed to close cmd list for texture copy\n");
+    handle_hr(m_texture2_copy_cmd_list->Close(), "Failed to close cmd list for texture2 copy\n");
     handle_hr(m_render_texture_cmd_list->Close(), "Failed to close cmd list for render texture\n");
     handle_hr(m_plugin_texture_cmd_list->Close(), "Failed to close cmd list for plugin texture\n");
 
@@ -1133,11 +1151,14 @@ void RenderAPI_D3D12::release_resources()
     SAFE_RELEASE(m_triangle_rtv_desc_heap);
     SAFE_RELEASE(m_triangle_dsv_desc_heap);
     SAFE_RELEASE(s_upload_texture);
+    SAFE_RELEASE(s_upload_texture2);
     SAFE_RELEASE(s_upload_buffer);
     SAFE_RELEASE(m_vertex_copy_cmd_list);
     SAFE_RELEASE(m_texture_copy_cmd_list);
+    SAFE_RELEASE(m_texture2_copy_cmd_list);
     SAFE_RELEASE(m_vertex_copy_cmd_allocator);
     SAFE_RELEASE(m_texture_copy_cmd_allocator);
+    SAFE_RELEASE(m_texture2_copy_cmd_allocator);
 
     if (ID3D12Resource* plugin_texture = m_plugin_texture.load())
     {
@@ -1378,6 +1399,23 @@ void* RenderAPI_D3D12::BeginModifyTexture(void* textureHandle, int textureWidth,
     return mapped;
 }
 
+void* RenderAPI_D3D12::BeginModifyTexture2(void* textureHandle, int textureWidth, int textureHeight, int* outRowPitch)
+{
+    // 기존 텍스처 수정과 동일하게, 동기화를 위한 대기 호출
+    wait_for_unity_frame_fence(m_texture2_copy_fence);
+    //std::cout << "[insta360][debug] BeginModifyTexture2 wait_for_unity_frame_fence 통과" << std::endl;
+
+    // RGBA32 기준 최소 rowPitch 계산 (기존 코드와 동일)
+    *outRowPitch = static_cast<int>(max(align_pow2(textureWidth * 4), 256));
+    const UINT64 kDataSize = get_aligned_size(textureWidth, textureHeight, 4, *outRowPitch);
+    if (!get_upload_resource(&s_upload_texture2, kDataSize, D3D12_UPLOAD_HEAP_TEXTURE2_BUFFER_NAME))
+        return NULL;
+
+    void* mapped = NULL;
+    s_upload_texture2->Map(0, NULL, &mapped);
+    return mapped;
+}
+
 void RenderAPI_D3D12::EndModifyTexture(void* textureHandle, int textureWidth, int textureHeight, int rowPitch, void* dataPtr)
 {
     ID3D12Device* device = s_d3d12->GetDevice();
@@ -1416,6 +1454,46 @@ void RenderAPI_D3D12::EndModifyTexture(void* textureHandle, int textureWidth, in
     resource_states.current = D3D12_RESOURCE_STATE_COMMON;
 
     m_texture_copy_fence = submit_cmd_to_unity_worker(m_texture_copy_cmd_list, &resource_states, 1);
+}
+
+void RenderAPI_D3D12::EndModifyTexture2(void* textureHandle, int textureWidth, int textureHeight, int rowPitch, void* dataPtr)
+{
+    ID3D12Device* device = s_d3d12->GetDevice();
+
+    const UINT64 kDataSize = get_aligned_size(textureWidth, textureHeight, 4, rowPitch);
+    if (!get_upload_resource(&s_upload_texture2, kDataSize, D3D12_UPLOAD_HEAP_TEXTURE2_BUFFER_NAME))
+        return;
+
+    s_upload_texture2->Unmap(0, 0);
+
+    ID3D12Resource* resource = (ID3D12Resource*)textureHandle;
+    D3D12_RESOURCE_DESC desc = resource->GetDesc();
+    assert(desc.Width == textureWidth);
+    assert(desc.Height == textureHeight);
+
+    D3D12_TEXTURE_COPY_LOCATION srcLoc = {};
+    srcLoc.pResource = s_upload_texture2;
+    srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    device->GetCopyableFootprints(&desc, 0, 1, 0, &srcLoc.PlacedFootprint, nullptr, nullptr, nullptr);
+
+    D3D12_TEXTURE_COPY_LOCATION dstLoc = {};
+    dstLoc.pResource = resource;
+    dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    dstLoc.SubresourceIndex = 0;
+
+    m_texture2_copy_cmd_allocator->Reset();
+    m_texture2_copy_cmd_list->Reset(m_texture2_copy_cmd_allocator, nullptr);
+    transition_barrier(m_texture2_copy_cmd_list, resource, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+    m_texture2_copy_cmd_list->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+    transition_barrier(m_texture2_copy_cmd_list, resource, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
+    m_texture2_copy_cmd_list->Close();
+
+    UnityGraphicsD3D12ResourceState resource_states = {};
+    resource_states.resource = resource;
+    resource_states.expected = D3D12_RESOURCE_STATE_COMMON;
+    resource_states.current = D3D12_RESOURCE_STATE_COMMON;
+
+    m_texture2_copy_fence = submit_cmd_to_unity_worker(m_texture2_copy_cmd_list, &resource_states, 1);
 }
 
 void* RenderAPI_D3D12::BeginModifyVertexBuffer(void* bufferHandle, size_t* outBufferSize)
